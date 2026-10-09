@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORIES = ('boxeudelivery-backend', 'boxeudelivery-ui', 'boxeudelivery-db-migrations',
-                'boxeudelivery-infrastructure', 'backend-boxeu', 'frontend-boxeu', 'boxeudelivery-knoweledge')
+                'boxeudelivery-infrastructure', 'backend-boxeu', 'frontend-boxeu', 'db-boxeu', 'boxeudelivery-knoweledge')
 PRIORITY = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3, 'UNKNOWN': 4}
 
 

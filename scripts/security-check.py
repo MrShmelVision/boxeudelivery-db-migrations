@@ -139,12 +139,36 @@ def secret_scan(source, report, *, revision=None):
     return len(findings)
 
 
-def build_image(source, image, tag):
-    args = ['docker', 'build', '--pull', '--platform=linux/amd64', '--tag', tag,
+def build_image(source, image, tag, *, capture=False):
+    cached = os.environ.get('BOXEU_BUILDX_CACHE') == 'true'
+    args = ['docker', *(['buildx', 'build', '--load'] if cached else ['build']),
+            '--pull', '--platform=linux/amd64', '--tag', tag,
             '--file', source / image['dockerfile']]
+    cache = None
+    pending = None
+    if cached:
+        name = image['name']
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name):
+            raise RuntimeError('Invalid BuildKit cache slot')
+        cache = STATE / 'buildkit-cache' / name
+        pending = cache.with_name(name + '-next')
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        if pending.exists():
+            shutil.rmtree(pending)
+        if (cache / 'index.json').is_file():
+            args += ['--cache-from', f'type=local,src={cache}']
+        args += ['--cache-to', f'type=local,dest={pending},mode=max']
     for key, value in image.get('build_args', {}).items():
         args += ['--build-arg', f'{key}={value}']
-    run([*args, source / image['context']])
+    try:
+        run([*args, source / image['context']], capture=capture)
+        if cached:
+            if cache.exists():
+                shutil.rmtree(cache)
+            pending.rename(cache)
+    finally:
+        if pending and pending.exists():
+            shutil.rmtree(pending)
 
 
 def json_messages(value):
@@ -171,8 +195,8 @@ def verify_openpgp_absent(target, binary_path, version, destination):
     if hashlib.sha256(recipe.read_bytes()).hexdigest() != pin['dockerfile_sha256']:
         raise RuntimeError('Go verifier recipe checksum mismatch')
     tool_tag = 'boxeu-security/govulncheck:' + pin['dockerfile_sha256'][:16]
-    run(['docker', 'build', '--pull', '--platform=linux/amd64', '--tag', tool_tag,
-         '--file', recipe, recipe.parent], capture=True)
+    build_image(ROOT, {'name': 'govulncheck', 'dockerfile': 'security/govulncheck.Dockerfile',
+                      'context': 'security'}, tool_tag, capture=True)
     tool_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', tool_tag], capture=True).stdout.strip()
     with tempfile.TemporaryDirectory(prefix='boxeu-go-binary-') as directory:
         temporary = Path(directory)
@@ -240,11 +264,44 @@ def verify_openpgp_absent(target, binary_path, version, destination):
         return proof
 
 
+def image_scan_input(reference):
+    details = json.loads(run(['docker', 'image', 'inspect', reference], capture=True).stdout)[0]
+    image_id = details.get('Id', '')
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', image_id):
+        raise RuntimeError('Image scan requires an immutable local image')
+    if re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}', reference):
+        if reference not in (details.get('RepoDigests') or []):
+            raise RuntimeError('Registry scan digest does not identify the pulled image')
+        if details.get('Os') != 'linux' or details.get('Architecture') != 'amd64':
+            raise RuntimeError('Registry qualification requires the reviewed Linux AMD64 image')
+        # Containerd-backed Docker can expose a manifest ID instead of a config ID.
+        # Registry scanning avoids its incomplete OCI export; verify both identities.
+        manifest = json.loads(run(['docker', 'buildx', 'imagetools', 'inspect', '--raw', reference],
+                                  capture=True).stdout)
+        config_id = manifest.get('config', {}).get('digest', '')
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}', config_id):
+            raise RuntimeError('Registry qualification requires a single-platform image manifest')
+        manifest_id = reference.split('@', 1)[1]
+        if image_id != config_id and (image_id != manifest_id
+                or details.get('Descriptor', {}).get('digest') != manifest_id):
+            raise RuntimeError('Pulled image identity differs from the selected registry manifest')
+        return reference, image_id, ['--image-src', 'remote', '--platform', 'linux/amd64'], config_id
+    return image_id, image_id, ['--image-src', 'docker'], None
+
+
+def image_sbom(reference, report, findings):
+    source, _, options, _ = image_scan_input(reference)
+    if read_json(findings).get('ArtifactName') != source:
+        raise RuntimeError('SBOM input differs from the security-scanned image')
+    run([TOOLS / 'trivy', 'image', *options, '--format', 'cyclonedx', '--output', report, source])
+
+
 def trivy_scan(source, report, *, image=False):
+    image_id = None
+    config_id = None
+    options = []
     if image:
-        source = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', source], capture=True).stdout.strip()
-        if not re.fullmatch(r'sha256:[a-f0-9]{64}', source):
-            raise RuntimeError('Image scan requires an immutable local image')
+        source, image_id, options, config_id = image_scan_input(str(source))
     args = [TOOLS / 'trivy', 'image' if image else 'fs', '--scanners',
             'vuln,secret' if image else 'vuln,misconfig,secret', '--severity', SEVERITIES,
             '--ignore-unfixed=false', '--config', ROOT / 'security/trivy.yaml',
@@ -252,9 +309,13 @@ def trivy_scan(source, report, *, image=False):
             '--timeout', '15m', '--format', 'json', '--output', report]
     if not image:
         args += ['--include-dev-deps']
-    args += [source]
+    args += [*options, source]
     run(args)
     data = read_json(report)
+    if image and (data.get('ArtifactName') != source or config_id is not None and (
+            data.get('Metadata', {}).get('ImageID') != config_id
+            or source not in (data.get('Metadata', {}).get('RepoDigests') or []))):
+        raise RuntimeError('Scanner inventory does not match the selected immutable image')
     for result in data.get('Results', []):
         for secret in result.get('Secrets', []):
             secret['Match'] = '[REDACTED]'
@@ -274,7 +335,7 @@ def trivy_scan(source, report, *, image=False):
             if item['VulnerabilityID'] == 'GO-2026-5932' and item['PkgName'] == 'golang.org/x/crypto':
                 destination = report.parent / (report.stem + '-go-' + hashlib.sha256(target.encode()).hexdigest()[:12])
                 if image and result.get('Type') == 'gobinary':
-                    proof = verify_openpgp_absent(source, '/' + target.lstrip('/'), item['InstalledVersion'], destination)
+                    proof = verify_openpgp_absent(image_id, '/' + target.lstrip('/'), item['InstalledVersion'], destination)
                 elif not image and result.get('Type') == 'gomod':
                     context = str(Path(target).parent)
                     declaration = next((i for i in read_json(Path(source) / 'security/project.json')['images']
@@ -406,8 +467,7 @@ def scan(spec, *, revision=None, source_only=False):
                     total += trivy_scan(tag, report / f'image-{index}.json', image=True)
                     images_completed += 1
                     image_reports.append(f'image-{index}.json')
-                    run([TOOLS / 'trivy', 'image', '--format', 'cyclonedx', '--output',
-                         report / f'image-{index}.cdx.json', tag])
+                    image_sbom(tag, report / f'image-{index}.cdx.json', report / f'image-{index}.json')
                 except (RuntimeError, OSError, ValueError) as error:
                     failures.append(f'{image["name"]} image: {error}')
                 finally:
@@ -475,7 +535,7 @@ def main():
         report.mkdir(parents=True, exist_ok=True)
         if trivy_scan(args.target, report / 'trivy.json', image=True):
             raise RuntimeError('Image blocked: security findings detected')
-        run([TOOLS / 'trivy', 'image', '--format', 'cyclonedx', '--output', report / 'sbom.cdx.json', args.target])
+        image_sbom(args.target, report / 'sbom.cdx.json', report / 'trivy.json')
     elif args.command == 'pre-push':
         revisions = []
         for line in sys.stdin:
