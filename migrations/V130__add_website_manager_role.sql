@@ -1,0 +1,7 @@
+ALTER TABLE crm.access_role
+    DROP CONSTRAINT ck_access_role_code_catalog,
+    ADD CONSTRAINT ck_access_role_code_catalog CHECK (code IN (
+        'OWNER', 'CRM_ADMIN', 'OPERATIONS_MANAGER', 'CUSTOMER_MANAGER',
+        'WEBSITE_MANAGER', 'BUYER', 'LOGISTICS_SPECIALIST', 'WAREHOUSE_OPERATOR',
+        'CASHIER', 'COURIER', 'ACCOUNTANT', 'FINANCIAL_CONTROLLER', 'SUPPLIER', 'CUSTOMER'
+    ));
