@@ -6,7 +6,7 @@
   "images": [
     {
       "name": "crm-migrations",
-      "repository": "ghcr.io/mrshmel94/boxeudelivery-db-migrations",
+      "repository": "ghcr.io/mrshmelvision/boxeudelivery-db-migrations",
       "moving_tags": [
         "staging"
       ]
