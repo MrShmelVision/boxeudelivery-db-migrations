@@ -144,6 +144,10 @@ def build_image(source, image, tag, *, capture=False):
     args = ['docker', *(['buildx', 'build', '--load'] if cached else ['build']),
             '--pull', '--platform=linux/amd64', '--tag', tag,
             '--file', source / image['dockerfile']]
+    if cached:
+        args += ['--provenance=false']
+    for key, value in image.get('labels', {}).items():
+        args += ['--label', f'{key}={value}']
     cache = None
     pending = None
     if cached:
@@ -410,7 +414,7 @@ def workflow_check(source, report):
     return 0
 
 
-def scan(spec, *, revision=None, source_only=False):
+def scan(spec, *, revision=None, source_only=False, keep_images=False):
     report_name = revision or ('working-tree-source' if source_only else 'working-tree')
     report = STATE / 'reports' / report_name
     report.mkdir(parents=True, exist_ok=True)
@@ -458,6 +462,7 @@ def scan(spec, *, revision=None, source_only=False):
                 failures.append(f'{title}: {error}')
         images_completed = 0
         image_reports = []
+        image_records = []
         if not source_only:
             for index, image in enumerate(project['images']):
                 tag = f'boxeu-security/{ROOT.name}:{os.getpid()}-{index}'
@@ -468,16 +473,20 @@ def scan(spec, *, revision=None, source_only=False):
                     images_completed += 1
                     image_reports.append(f'image-{index}.json')
                     image_sbom(tag, report / f'image-{index}.cdx.json', report / f'image-{index}.json')
+                    image_records.append({'name': image['name'], 'image_id':
+                        run(['docker', 'image', 'inspect', '--format', '{{.Id}}', tag], capture=True).stdout.strip()})
                 except (RuntimeError, OSError, ValueError) as error:
                     failures.append(f'{image["name"]} image: {error}')
                 finally:
-                    run(['docker', 'image', 'rm', tag], capture=True, accepted=(0, 1))
+                    if not keep_images:
+                        run(['docker', 'image', 'rm', tag], capture=True, accepted=(0, 1))
         print(f'Private security reports: {report}')
         (report / 'summary.json').write_text(json.dumps({'findings': total, 'scan_errors': failures,
             'scanned_at_utc': datetime.now(timezone.utc).isoformat(), 'revision': revision or 'working-tree',
             'scope': 'source-only' if source_only else 'source-and-images',
             'image_scans_requested': 0 if source_only else len(project['images']),
             'image_scans_completed': images_completed, 'image_reports': image_reports,
+            'image_records': image_records,
             'passed': not total and not failures}, indent=2) + '\n')
         for failure in failures:
             print(f'  SCAN ERROR: {failure}', file=sys.stderr)
@@ -506,7 +515,11 @@ def main():
     parser.add_argument('--source-only', action='store_true')
     parser.add_argument('--install-hooks', action='store_true')
     parser.add_argument('--target')
+    parser.add_argument('--keep-images', action='store_true',
+                        help='Retain this run\'s scanned platform images for configuration validation')
     args = parser.parse_args()
+    if args.keep_images and (args.command != 'scan' or args.source_only):
+        raise RuntimeError('--keep-images requires a complete scan')
     STATE.mkdir(parents=True, exist_ok=True)
     STATE.chmod(0o700)
     # Keep reports and shared per-repository scanner files consistent across IDE/hooks/CI calls.
@@ -548,7 +561,7 @@ def main():
         for revision in revisions:
             scan(spec, revision=revision)
     else:
-        scan(spec, source_only=args.source_only)
+        scan(spec, source_only=args.source_only, keep_images=args.keep_images)
 
 
 if __name__ == '__main__':

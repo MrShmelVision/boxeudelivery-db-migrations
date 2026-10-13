@@ -1,0 +1,64 @@
+name: Container verification
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'
+permissions:
+  contents: read
+  actions: read
+  packages: read
+concurrency:
+  group: boxeu-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  SOURCE_REPOSITORY: ${{ github.repository }}
+  SOURCE_REVISION: ${{ github.sha }}
+  SOURCE_REF: ${{ github.ref }}
+  BOXEU_BUILDX_CACHE: 'true'
+jobs:
+  gate:
+    name: Security gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact revision and reachable history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Qualify the exact successful release for a scheduled rescan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci-images.py plan
+      - name: Run full source, application and build checks when no qualified release exists
+        if: steps.plan.outputs.reuse != 'true'
+        uses: ./.github/actions/source-application
+        with:
+          image-layers: 'true'
+      - name: Package and freshly scan every exact candidate
+        if: steps.plan.outputs.reuse != 'true'
+        run: |
+          python3 scripts/ci-images.py build
+          python3 scripts/ci-images.py scan
+      - name: Restore only inputs for fresh scheduled analysis
+        if: steps.plan.outputs.reuse == 'true'
+        uses: ./.github/actions/security-setup
+        with:
+          layers: ${{ steps.plan.outputs.go_layers }}
+          scope: analysis
+          buildx: ${{ steps.plan.outputs.go_layers }}
+      - name: Recheck the current source, history and dependency locks
+        if: steps.plan.outputs.reuse == 'true'
+        run: python3 scripts/security-check.py scan --source-only
+      - name: Authenticate read-only access to the qualified registry artifacts
+        if: steps.plan.outputs.reuse == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Freshly scan the qualified release digests without rebuilding
+        if: steps.plan.outputs.reuse == 'true'
+        run: python3 scripts/ci-images.py rescan

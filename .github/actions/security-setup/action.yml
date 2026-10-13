@@ -1,0 +1,48 @@
+name: Verified security inputs
+description: Restore downloads and build layers without restoring gate results or credentials
+inputs:
+  layers:
+    description: Restore this job's BuildKit layers
+    default: 'true'
+  scope:
+    description: Separate source analysis and image-packaging layers
+    default: images
+  buildx:
+    description: Set up the builder when images or Go analysis require it
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Set advisory input cache period
+      id: date
+      shell: bash
+      run: printf 'week=%s\n' "$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+    - name: Restore only checksum-verified pinned tool archives
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: .local/security/tools/*.tar.gz
+        key: boxeu-tools-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('security/toolchain.json') }}
+    - name: Restore advisory inputs with normal fresh-update checks
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ~/.cache/trivy/db
+          ~/.cache/trivy/java-db
+        # Avoid a large immutable database copy per commit/day. Separate job
+        # purposes so source checks cannot prevent saving the Java image DB.
+        # Trivy still checks for advisory updates on every invocation.
+        key: boxeu-advisories-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.scope }}-${{ hashFiles('security/toolchain.json') }}-${{ steps.date.outputs.week }}
+        restore-keys: |
+          boxeu-advisories-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.scope }}-${{ hashFiles('security/toolchain.json') }}-
+    - name: Set up Docker Buildx
+      if: inputs.buildx == 'true'
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+    - name: Restore build layers
+      if: inputs.layers == 'true'
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: .local/security/buildkit-cache
+        key: boxeu-layers-v2-${{ runner.os }}-${{ inputs.scope }}-${{ hashFiles('Dockerfile', 'docker/**', 'security/govulncheck.Dockerfile', 'ci/project.json') }}-${{ github.sha }}
+        restore-keys: |
+          boxeu-layers-v2-${{ runner.os }}-${{ inputs.scope }}-${{ hashFiles('Dockerfile', 'docker/**', 'security/govulncheck.Dockerfile', 'ci/project.json') }}-
+          boxeu-layers-v2-${{ runner.os }}-${{ inputs.scope }}-

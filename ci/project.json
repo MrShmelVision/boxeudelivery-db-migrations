@@ -1,0 +1,15 @@
+{
+  "kind": "database",
+  "default_branch": "main",
+  "release_workflow": "container.yml",
+  "artifact": null,
+  "images": [
+    {
+      "name": "crm-migrations",
+      "repository": "ghcr.io/mrshmel94/boxeudelivery-db-migrations",
+      "moving_tags": [
+        "staging"
+      ]
+    }
+  ]
+}

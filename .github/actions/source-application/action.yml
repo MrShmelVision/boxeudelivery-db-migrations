@@ -1,0 +1,83 @@
+name: Source and application checks
+description: Run fresh source checks, compile once and bind the resulting artifact to this run
+inputs:
+  database-read-key:
+    description: Existing read-only database checkout key, used only by the website backend
+    default: ''
+  complete-images:
+    description: Also retain scanned platform images for infrastructure configuration checks
+    default: 'false'
+  image-layers:
+    description: This job will package images after the application checks
+    default: 'false'
+outputs:
+  artifact:
+    description: Whether the application produces a transferable build artifact
+    value: ${{ steps.context.outputs.artifact }}
+runs:
+  using: composite
+  steps:
+    - name: Validate source and application recipe
+      id: context
+      shell: bash
+      run: python3 scripts/ci-images.py context
+    - uses: ./.github/actions/security-setup
+      with:
+        layers: ${{ inputs.image-layers == 'true' || steps.context.outputs.go_layers == 'true' }}
+        scope: ${{ inputs.image-layers == 'true' && 'images' || 'source' }}
+        buildx: ${{ inputs.image-layers == 'true' || steps.context.outputs.go_layers == 'true' }}
+    - name: Check source, history, dependencies and workflow syntax
+      if: inputs.complete-images != 'true'
+      shell: bash
+      run: python3 scripts/security-check.py scan --source-only
+    - name: Check source and each platform image once
+      if: inputs.complete-images == 'true'
+      shell: bash
+      run: python3 scripts/security-check.py scan --keep-images
+    - name: Set up Java and verified dependency downloads
+      if: steps.context.outputs.kind == 'java' || steps.context.outputs.kind == 'website-java'
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Restore only Gradle downloads, never application or test outputs
+      if: steps.context.outputs.kind == 'java' || steps.context.outputs.kind == 'website-java'
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+          ~/.gradle/wrapper
+        key: boxeu-gradle-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.gradle', 'settings.gradle', 'gradle.properties', 'gradle.lockfile', 'gradle/wrapper/gradle-wrapper.properties', 'gradle/verification-metadata.xml') }}
+    - name: Check out the reviewed private website database
+      if: steps.context.outputs.kind == 'website-java'
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        repository: MrShmel94/db-boxeu
+        ref: ${{ steps.context.outputs.database_revision }}
+        path: .local/db-boxeu
+        ssh-key: ${{ inputs.database-read-key }}
+        persist-credentials: false
+    - name: Set up Node and package downloads
+      if: steps.context.outputs.kind == 'vite' || steps.context.outputs.kind == 'next'
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      with:
+        node-version: ${{ steps.context.outputs.node_version }}
+        cache: ${{ steps.context.outputs.kind == 'next' && 'npm' || '' }}
+    - name: Restore the CRM package store
+      if: steps.context.outputs.kind == 'vite'
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ~/.cache/boxeu-pnpm
+        key: boxeu-pnpm-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'package.json', 'ci/project.json') }}
+    - name: Run the existing application or configuration checks
+      shell: bash
+      run: bash scripts/ci-checks.sh
+    - name: Bind only the checked application output
+      if: steps.context.outputs.artifact == 'true'
+      shell: bash
+      run: python3 scripts/ci-images.py seal
+    - name: Require unchanged source and clean whitespace
+      shell: bash
+      run: |
+        git diff --check
+        python3 scripts/ci-images.py context

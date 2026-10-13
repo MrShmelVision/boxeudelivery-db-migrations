@@ -1,128 +1,75 @@
-name: Container image
-
+name: Container release
 on:
-  pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * *"
-
 permissions:
   contents: read
-
 concurrency:
-  group: container-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: boxeu-release-${{ github.ref }}
+  # Finish a scanned publication atomically; a newer push replaces pending work.
+  cancel-in-progress: false
 env:
-  IMAGE_NAME: ghcr.io/mrshmel94/boxeudelivery-db-migrations
-
+  SOURCE_REPOSITORY: ${{ github.repository }}
+  SOURCE_REVISION: ${{ github.sha }}
+  SOURCE_REF: ${{ github.ref }}
+  BOXEU_BUILDX_CACHE: 'true'
 jobs:
-  security:
-    name: Source security
+  checks:
+    name: Application and source checks
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Check out complete history without stored credentials
+      - name: Check out the exact revision and reachable history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Install verified security tools
-        run: python3 scripts/security-check.py setup
-      - name: Check dependencies, configuration, secrets, and source code
-        run: python3 scripts/security-check.py scan --source-only
-
-  verify:
-    name: Container gate
-    needs: security
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.ref != 'refs/heads/main'
+      - uses: ./.github/actions/source-application
+  gate:
+    name: Security gate
+    needs: checks
+    if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Build container image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          push: false
-          load: true
-          tags: boxeu-security:ci
-          platforms: linux/amd64
-          cache-from: type=gha
-
-      - name: Scan the built image and generate its SBOM
-        run: python3 scripts/security-check.py image --target boxeu-security:ci
-
-  publish:
-    needs: security
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Check out repository
+      - name: Require the default branch and successful read-only checks
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          test "$SOURCE_REF" = refs/heads/main
+          test "$CHECKS_RESULT" = success
+      - name: Check out the exact revision and reachable history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Build candidate container image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: ./.github/actions/security-setup
         with:
-          context: .
-          push: false
-          load: true
-          platforms: linux/amd64
-          tags: |
-            ${{ env.IMAGE_NAME }}:staging
-            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Scan the exact publication candidate
-        run: python3 scripts/security-check.py image --target "$IMAGE_NAME:sha-$GITHUB_SHA"
-
-      - name: Log in to GitHub Container Registry
+          scope: images
+      - name: Build the exact candidates and freshly scan every image
+        run: |
+          python3 scripts/ci-images.py build
+          python3 scripts/ci-images.py scan
+      - name: Authenticate publication only after every gate passes
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish only the scanned image
-        run: |
-          docker push "$IMAGE_NAME:sha-$GITHUB_SHA"
-          docker push "$IMAGE_NAME:staging"
-
-  security-gate:
-    name: Security gate
-    if: always()
-    needs: [security, verify, publish]
+      - name: Publish only this run's scanned image identities
+        run: python3 scripts/ci-images.py publish
+  reject-ref:
+    name: Release reference guard
+    if: github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    permissions:
+      contents: read
     steps:
-      - name: Require source and container checks to succeed
-        env:
-          SOURCE_RESULT: ${{ needs.security.result }}
-          VERIFY_RESULT: ${{ needs.verify.result }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-        run: |
-          test "$SOURCE_RESULT" = success
-          test "$VERIFY_RESULT" = success || test "$PUBLISH_RESULT" = success
+      - name: Require main for publication; use Container verification for other refs
+        run: test "$SOURCE_REF" = refs/heads/main

@@ -11,3 +11,6 @@
 /*lock* @MrShmel94
 /compose*.yaml @MrShmel94
 /scripts/security-report.py @MrShmel94
+/ci/ @MrShmel94
+/scripts/ci-images.py @MrShmel94
+/scripts/ci-checks.sh @MrShmel94
