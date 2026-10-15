@@ -294,10 +294,25 @@ def image_scan_input(reference):
 
 
 def image_sbom(reference, report, findings):
-    source, _, options, _ = image_scan_input(reference)
-    if read_json(findings).get('ArtifactName') != source:
+    source, _, _, config_id = image_scan_input(reference)
+    scanned = read_json(findings)
+    if scanned.get('ArtifactName') != source or config_id is not None and (
+            scanned.get('Metadata', {}).get('ImageID') != config_id
+            or source not in (scanned.get('Metadata', {}).get('RepoDigests') or [])):
         raise RuntimeError('SBOM input differs from the security-scanned image')
-    run([TOOLS / 'trivy', 'image', *options, '--format', 'cyclonedx', '--output', report, source])
+    packages = [package for result in scanned.get('Results', []) for package in result.get('Packages', [])]
+    package_urls = [package.get('Identifier', {}).get('PURL') for package in packages]
+    if not packages or any(not isinstance(url, str) or not url for url in package_urls):
+        raise RuntimeError('SBOM requires the complete identified package inventory')
+    # The fresh image scan includes --list-all-pkgs. Convert that same inventory,
+    # retaining identity checks rather than downloading/analyzing the image twice.
+    run([TOOLS / 'trivy', 'convert', '--format', 'cyclonedx', '--output', report, findings])
+    sbom = read_json(report)
+    if sbom.get('bomFormat') != 'CycloneDX' or sbom.get('metadata', {}).get('component', {}).get('name') != source:
+        raise RuntimeError('Converted SBOM image identity is missing or differs')
+    converted_urls = {component.get('purl') for component in sbom.get('components', [])}
+    if not set(package_urls).issubset(converted_urls):
+        raise RuntimeError('Converted SBOM omitted scanned packages')
 
 
 def trivy_scan(source, report, *, image=False):
