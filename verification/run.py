@@ -29,6 +29,33 @@ def main():
         if any(line.endswith('|f') for line in result.stdout.splitlines()):
             raise RuntimeError('SQL assertion returned false: ' + filename)
 
+    def catalog_notifications():
+        project_id = '11111111-1111-4111-8111-111111111111'
+        source = f"""
+LISTEN website_catalog_changes;
+BEGIN;
+INSERT INTO crm.website_catalog_revision(project_id,transaction_id)
+VALUES('{project_id}',txid_current()) ON CONFLICT DO NOTHING;
+INSERT INTO crm.website_catalog_revision(project_id,transaction_id)
+VALUES('{project_id}',txid_current()) ON CONFLICT DO NOTHING;
+SELECT 'catalog_uncommitted';
+COMMIT;
+SELECT 'catalog_committed';
+BEGIN;
+INSERT INTO crm.website_catalog_revision(project_id,transaction_id)
+VALUES('{project_id}',txid_current()) ON CONFLICT DO NOTHING;
+ROLLBACK;
+SELECT 'catalog_rolled_back';
+"""
+        result = run(compose + ['exec', '-T', 'postgres', 'psql', '-X', '-At', '-U', 'boxeudelivery',
+                               '-d', 'boxeudelivery_validation', '-v', 'ON_ERROR_STOP=1'], source=source, capture=True)
+        signal = f'Asynchronous notification "website_catalog_changes" with payload "{project_id}"'
+        if result.stdout.count(signal) != 1 or not (
+                result.stdout.index('catalog_uncommitted') < result.stdout.index(signal)
+                < result.stdout.index('catalog_committed')):
+            raise RuntimeError('Catalogue notification must occur once after commit and never after rollback')
+        print('PASS committed catalogue notification, transaction coalescing and rollback', flush=True)
+
     try:
         run(compose + ['build', 'migrations'])
         for history in ('clean', 'populated-131'):
@@ -44,6 +71,7 @@ def main():
             if history == 'populated-131':
                 sql('preserved.sql')
             sql('catalogue.sql')
+            catalog_notifications()
             sql('remaining-triggers.sql')
             sql('goods-transfer.sql')
             sql('category-appearance.sql')

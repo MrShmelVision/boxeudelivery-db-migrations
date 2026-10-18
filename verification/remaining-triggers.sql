@@ -20,7 +20,8 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'cargo_item_photo:trg_cargo_photo_owner','cargo_item_photo:website_catalog_changed','cargo_item_photo_object:website_catalog_changed',
     'customer_order_line:website_catalog_changed','inbound_delivery_line:trg_inbound_delivery_line_legacy_attributes',
     'supplier_goods_entry:website_catalog_changed','supplier_goods_variant:trg_supplier_goods_variant_legacy_attributes',
-    'supplier_goods_variant:website_catalog_changed','task:trg_task_subcategory_usage'], 'all active CRM triggers have scenarios');
+    'supplier_goods_variant:website_catalog_changed','task:trg_task_subcategory_usage',
+    'website_catalog_revision:website_catalog_notify'], 'all active CRM triggers have scenarios');
 
 DO $$
 DECLARE sample RECORD; variant UUID; actual JSONB; signature TEXT;
