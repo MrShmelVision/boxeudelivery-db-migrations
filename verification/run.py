@@ -45,6 +45,8 @@ def main():
                 sql('preserved.sql')
             sql('catalogue.sql')
             sql('remaining-triggers.sql')
+            sql('goods-transfer.sql')
+            sql('category-appearance.sql')
             print('PASS full-schema migration and trigger execution: ' + history, flush=True)
             run(compose + ['rm', '--stop', '--force', '--volumes', 'postgres'])
     finally:
