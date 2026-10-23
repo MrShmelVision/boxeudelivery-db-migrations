@@ -18,8 +18,18 @@ def main():
         return subprocess.run(arguments, cwd=ROOT, env=environment, input=source, text=True,
                               stdout=subprocess.PIPE if capture else None, check=True, timeout=600)
 
-    def migration(*arguments):
-        run(compose + ['run', '--rm', '--no-deps', 'migrations', *arguments])
+    def migration(*arguments, historical=False):
+        if historical:
+            # Reconstruct the fixture inventory that existed before navigation groups.
+            script = ('mkdir -p /tmp/history-fixtures && '
+                      'cp /flyway/fixtures/R__01_account_reference_data.sql '
+                      '/flyway/fixtures/R__02_currency_reference_data.sql '
+                      '/flyway/fixtures/R__03_country_reference_data.sql /tmp/history-fixtures/ && '
+                      'exec /flyway/flyway -locations=filesystem:/flyway/migrations,filesystem:/tmp/history-fixtures "$@"')
+            run(compose + ['run', '--rm', '--no-deps', '--entrypoint', 'sh', 'migrations',
+                           '-c', script, 'historical-fixtures', *arguments])
+        else:
+            run(compose + ['run', '--rm', '--no-deps', 'migrations', *arguments])
 
     def sql(filename):
         source = (ROOT / 'verification' / filename).read_text()
@@ -61,10 +71,12 @@ SELECT 'catalog_rolled_back';
         for history in ('clean', 'populated-131'):
             run(compose + ['up', '-d', '--wait', '--wait-timeout', '90', 'postgres'])
             if history == 'populated-131':
-                migration('-target=131', 'migrate')
+                migration('-target=131', 'migrate', historical=True)
                 sql('history.sql')
-                migration('-target=133', 'migrate')
+                migration('-target=133', 'migrate', historical=True)
                 sql('known-133-defect.sql')
+                migration('-target=144', 'migrate', historical=True)
+                sql('hierarchy-history.sql')
             migration('migrate')
             migration('migrate')
             migration('validate')
@@ -75,6 +87,7 @@ SELECT 'catalog_rolled_back';
             sql('remaining-triggers.sql')
             sql('goods-transfer.sql')
             sql('category-appearance.sql')
+            sql('catalogue-hierarchy.sql')
             print('PASS full-schema migration and trigger execution: ' + history, flush=True)
             run(compose + ['rm', '--stop', '--force', '--volumes', 'postgres'])
     finally:

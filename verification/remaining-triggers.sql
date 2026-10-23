@@ -15,13 +15,54 @@ END $$;
 SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.relname,t.tgname)
     FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
     JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname='crm') = ARRAY[
-    'border_tariff_category:website_catalog_changed','border_tariff_subcategory:website_catalog_changed',
+    'border_tariff_category:website_catalog_changed','border_tariff_category_group:website_catalog_changed','border_tariff_subcategory:website_catalog_changed',
     'cargo_item:trg_cargo_item_supplier_provenance','cargo_item:website_catalog_changed','cargo_item_financial_entry:website_catalog_changed',
     'cargo_item_photo:trg_cargo_photo_owner','cargo_item_photo:website_catalog_changed','cargo_item_photo_object:website_catalog_changed',
     'customer_order_line:website_catalog_changed','inbound_delivery_line:trg_inbound_delivery_line_legacy_attributes',
+    'product_brand:website_catalog_brand_changed','supplier_goods_entry:website_catalog_brand_changed',
     'supplier_goods_entry:website_catalog_changed','supplier_goods_variant:trg_supplier_goods_variant_legacy_attributes',
     'supplier_goods_variant:website_catalog_changed','task:trg_task_subcategory_usage',
     'website_catalog_revision:website_catalog_notify'], 'all active CRM triggers have scenarios');
+
+DO $$
+DECLARE brand UUID := 'b146b146-b146-4146-8146-b146b146b146';
+BEGIN
+    INSERT INTO crm.product_brand(id,name,created_by_subject,updated_by_subject,created_at,updated_at)
+    VALUES(brand,'Verification brand','verification','verification',now(),now());
+    PERFORM pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'unused brand does not invalidate catalogue');
+    UPDATE crm.supplier_goods_entry SET brand_id=brand WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify((SELECT count(*)=1 AND bool_and(project_id='11111111-1111-4111-8111-111111111111'::uuid)
+        FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'brand assignment invalidates only its project');
+    BEGIN
+        DELETE FROM crm.product_brand WHERE id=brand;
+        RAISE EXCEPTION 'Used brand deletion must fail';
+    EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+    BEGIN
+        INSERT INTO crm.product_brand(id,name,created_by_subject,updated_by_subject,created_at,updated_at)
+        VALUES(gen_random_uuid(),'verification BRAND','verification','verification',now(),now());
+        RAISE EXCEPTION 'Case-insensitive duplicate brand must fail';
+    EXCEPTION WHEN unique_violation THEN NULL; END;
+END $$;
+DO $$ BEGIN
+    UPDATE crm.product_brand SET name='Renamed verification brand' WHERE id='b146b146-b146-4146-8146-b146b146b146';
+    PERFORM pg_temp.verify((SELECT count(*)=1 AND bool_and(project_id='11111111-1111-4111-8111-111111111111'::uuid)
+        FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'brand rename invalidates only referenced projects');
+END $$;
+DO $$ BEGIN
+    UPDATE crm.product_brand SET name=name WHERE id='b146b146-b146-4146-8146-b146b146b146';
+    UPDATE crm.supplier_goods_entry SET brand_id=brand_id WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'no-op brand changes do not invalidate');
+END $$;
+BEGIN;
+UPDATE crm.supplier_goods_entry SET brand_id=NULL WHERE id='33333333-3333-4333-8333-333333333333';
+SELECT pg_temp.verify(EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'brand removal invalidates before rollback');
+ROLLBACK;
+DO $$ BEGIN
+    PERFORM pg_temp.verify((SELECT brand_id IS NOT NULL FROM crm.supplier_goods_entry WHERE id='33333333-3333-4333-8333-333333333333'),'brand rollback restores assignment');
+    UPDATE crm.supplier_goods_entry SET brand_id=NULL WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),'brand removal invalidates catalogue');
+    DELETE FROM crm.product_brand WHERE id='b146b146-b146-4146-8146-b146b146b146';
+END $$;
 
 DO $$
 DECLARE sample RECORD; variant UUID; actual JSONB; signature TEXT;
