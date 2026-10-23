@@ -2,7 +2,7 @@ FROM flyway/flyway:13.9.0-alpine@sha256:ae8e985a8caf73181a39aad823690f27d55c850d
 
 # BoxEU connects only to PostgreSQL. Do not ship unrelated JDBC driver bundles.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache 'zlib>=1.3.2-r1' 'libexpat>=2.9.0-r0' \
+    && apk add --no-cache 'musl>=1.2.6-r3' 'musl-utils>=1.2.6-r3' 'brotli-libs>=1.2.1-r0' 'zlib>=1.3.2-r1' 'libexpat>=2.9.0-r0' \
     && find /flyway/drivers -mindepth 1 -maxdepth 1 ! -name 'postgresql-*.jar' -exec rm -rf {} + \
     && find /flyway/lib/flyway -maxdepth 1 -name 'flyway-database-*.jar' \
        ! -name 'flyway-database-postgresql-*.jar' -delete \
