@@ -3,7 +3,7 @@ DO $$
 DECLARE changed INT;
 BEGIN
     WITH actual AS (
-        SELECT 'photo' AS family,p.id::TEXT AS identity,to_jsonb(p)-'project_id'-'supplier_id' AS value FROM crm.cargo_item_photo p
+        SELECT 'photo' AS family,p.id::TEXT AS identity,to_jsonb(p)-'project_id'-'supplier_id'-'gallery_id' AS value FROM crm.cargo_item_photo p
         UNION ALL SELECT 'photo-object',p.photo_id::TEXT||':'||p.variant_code,to_jsonb(p) FROM crm.cargo_item_photo_object p
         UNION ALL SELECT 'finance',e.id::TEXT,to_jsonb(e) FROM crm.cargo_item_financial_entry e
     ) SELECT count(*) INTO changed FROM verification.retained r
