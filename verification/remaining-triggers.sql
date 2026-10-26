@@ -15,13 +15,29 @@ END $$;
 SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.relname,t.tgname)
     FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
     JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname='crm') = ARRAY[
-    'border_tariff_category:website_catalog_changed','border_tariff_category_group:website_catalog_changed','border_tariff_subcategory:website_catalog_changed',
-    'cargo_item:trg_cargo_item_supplier_provenance','cargo_item:website_catalog_changed','cargo_item_financial_entry:website_catalog_changed',
-    'cargo_item_photo:trg_cargo_photo_owner','cargo_item_photo:website_catalog_changed','cargo_item_photo_object:website_catalog_changed',
-    'customer_order_line:website_catalog_changed','inbound_delivery_line:trg_inbound_delivery_line_legacy_attributes',
-    'product_brand:website_catalog_brand_changed','supplier_goods_entry:website_catalog_brand_changed',
-    'supplier_goods_entry:website_catalog_changed','supplier_goods_variant:trg_supplier_goods_variant_legacy_attributes',
-    'supplier_goods_variant:website_catalog_changed','task:trg_task_subcategory_usage',
+    'border_tariff_category:website_catalog_changed',
+    'border_tariff_category_group:website_catalog_changed',
+    'border_tariff_subcategory:website_catalog_changed',
+    'cargo_item:trg_cargo_item_supplier_provenance',
+    'cargo_item:website_catalog_changed',
+    'cargo_item:website_stock_eligibility_changed',
+    'cargo_item_financial_entry:website_catalog_changed',
+    'cargo_item_photo:trg_cargo_photo_owner',
+    'cargo_item_photo:website_catalog_changed',
+    'cargo_item_photo_object:website_catalog_changed',
+    'customer_order_line:website_catalog_changed',
+    'inbound_delivery:website_stock_eligibility_changed',
+    'inbound_delivery_line:trg_inbound_delivery_line_legacy_attributes',
+    'mini_supplier_intake:website_stock_eligibility_changed',
+    'mini_supplier_intake_item:website_stock_eligibility_changed',
+    'product_brand:website_catalog_brand_changed',
+    'supplier_goods_entry:website_catalog_brand_changed',
+    'supplier_goods_entry:website_catalog_changed',
+    'supplier_goods_variant:trg_supplier_goods_variant_legacy_attributes',
+    'supplier_goods_variant:website_catalog_changed',
+    'task:trg_task_subcategory_usage',
+    'warehouse_relocation:website_stock_eligibility_changed',
+    'warehouse_relocation_item:website_stock_eligibility_changed',
     'website_catalog_revision:website_catalog_notify'], 'all active CRM triggers have scenarios');
 
 DO $$

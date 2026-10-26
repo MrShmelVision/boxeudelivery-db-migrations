@@ -85,6 +85,7 @@ SELECT 'catalog_rolled_back';
             sql('catalogue.sql')
             catalog_notifications()
             sql('remaining-triggers.sql')
+            sql('catalogue-stock.sql')
             sql('goods-transfer.sql')
             sql('category-appearance.sql')
             sql('catalogue-hierarchy.sql')
