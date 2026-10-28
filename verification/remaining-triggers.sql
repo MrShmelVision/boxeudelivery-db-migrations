@@ -31,6 +31,7 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'mini_supplier_intake:website_stock_eligibility_changed',
     'mini_supplier_intake_item:website_stock_eligibility_changed',
     'product_brand:website_catalog_brand_changed',
+    'supplier_goods_entry:supplier_goods_article_number',
     'supplier_goods_entry:website_catalog_brand_changed',
     'supplier_goods_entry:website_catalog_changed',
     'supplier_goods_variant:trg_supplier_goods_variant_legacy_attributes',
@@ -39,6 +40,110 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'warehouse_relocation:website_stock_eligibility_changed',
     'warehouse_relocation_item:website_stock_eligibility_changed',
     'website_catalog_revision:website_catalog_notify'], 'all active CRM triggers have scenarios');
+
+BEGIN;
+DO $$
+DECLARE previous JSONB; preset INTEGER;
+BEGIN
+    SELECT to_jsonb(g) INTO STRICT previous FROM crm.supplier_goods_entry g
+        WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(previous->>'website_delivery_days' IS NULL, 'existing goods have no invented delivery promise');
+    FOREACH preset IN ARRAY ARRAY[7,14,21] LOOP
+        UPDATE crm.supplier_goods_entry SET website_delivery_days=preset
+            WHERE id='33333333-3333-4333-8333-333333333333';
+        PERFORM pg_temp.verify((SELECT website_delivery_days=preset AND to_jsonb(g)-'website_delivery_days'=previous-'website_delivery_days'
+            FROM crm.supplier_goods_entry g WHERE id='33333333-3333-4333-8333-333333333333'),
+            'delivery preset preserves every independent goods fact');
+    END LOOP;
+    BEGIN
+        UPDATE crm.supplier_goods_entry SET website_delivery_days=8 WHERE id='33333333-3333-4333-8333-333333333333';
+        RAISE EXCEPTION 'Unsupported delivery preset must fail';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    UPDATE crm.supplier_goods_entry SET website_delivery_days=NULL WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),
+        'CRM-only delivery setting does not invalidate website publication');
+END $$;
+ROLLBACK;
+
+BEGIN;
+DO $$
+DECLARE
+    previous JSONB;
+    percentage INTEGER;
+BEGIN
+    SELECT to_jsonb(g) INTO STRICT previous FROM crm.supplier_goods_entry g
+        WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(previous->>'website_prepayment_percent' IS NULL,
+        'existing goods have no invented prepayment');
+    FOREACH percentage IN ARRAY ARRAY[0,1,25,50,99,100] LOOP
+        UPDATE crm.supplier_goods_entry SET website_prepayment_percent=percentage
+            WHERE id='33333333-3333-4333-8333-333333333333';
+        PERFORM pg_temp.verify((SELECT website_prepayment_percent=percentage
+            AND to_jsonb(g)-'website_prepayment_percent'=previous-'website_prepayment_percent'
+            FROM crm.supplier_goods_entry g WHERE id='33333333-3333-4333-8333-333333333333'),
+            'prepayment preserves independent goods facts including price and delivery');
+    END LOOP;
+    FOREACH percentage IN ARRAY ARRAY[-1,101] LOOP
+        BEGIN
+            UPDATE crm.supplier_goods_entry SET website_prepayment_percent=percentage
+                WHERE id='33333333-3333-4333-8333-333333333333';
+            RAISE EXCEPTION 'Out-of-range prepayment must fail';
+        EXCEPTION WHEN check_violation THEN NULL;
+        END;
+    END LOOP;
+    UPDATE crm.supplier_goods_entry SET website_prepayment_percent=NULL
+        WHERE id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=txid_current()),
+        'CRM-only prepayment does not invalidate website publication');
+END $$;
+ROLLBACK;
+
+BEGIN;
+DO $$
+DECLARE
+    goods UUID := gen_random_uuid();
+    source RECORD;
+    article TEXT;
+    second_article TEXT;
+BEGIN
+    SELECT g.*,p.task_prefix INTO STRICT source FROM crm.supplier_goods_entry g
+        JOIN crm.project p ON p.id=g.project_id WHERE g.id='33333333-3333-4333-8333-333333333333';
+    PERFORM pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.supplier_goods_entry g
+        LEFT JOIN crm.supplier_goods_article_number n USING(article_number)
+        WHERE g.article_number IS NULL OR n.article_number IS NULL),'all current and historical goods have reserved articles');
+    INSERT INTO crm.supplier_goods_entry(id,project_id,supplier_id,name,created_by_subject,updated_by_subject)
+        VALUES(goods,source.project_id,source.supplier_id,'Article verification','verification','verification')
+        RETURNING article_number INTO article;
+    PERFORM pg_temp.verify(article ~ ('^' || source.task_prefix || '-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{7}$'),
+        'goods article uses project prefix and seven random characters');
+    UPDATE crm.supplier_goods_entry SET article_number=article_number,name='Renamed article verification' WHERE id=goods;
+    PERFORM pg_temp.verify((SELECT article_number=article FROM crm.supplier_goods_entry WHERE id=goods),
+        'ordinary edits and no-op article updates preserve the number');
+    BEGIN
+        UPDATE crm.supplier_goods_entry SET article_number=source.article_number WHERE id=goods;
+        RAISE EXCEPTION 'Manual article change must fail';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    BEGIN
+        UPDATE crm.supplier_goods_entry SET article_number=NULL WHERE id=goods;
+        RAISE EXCEPTION 'Clearing article must fail';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    BEGIN
+        INSERT INTO crm.supplier_goods_entry(id,project_id,supplier_id,name,created_by_subject,updated_by_subject,article_number)
+            VALUES(gen_random_uuid(),source.project_id,source.supplier_id,'Manual article','verification','verification',article);
+        RAISE EXCEPTION 'Caller supplied article must fail';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    UPDATE crm.project SET task_prefix='ART150' WHERE id=source.project_id;
+    INSERT INTO crm.supplier_goods_entry(id,project_id,supplier_id,name,created_by_subject,updated_by_subject)
+        VALUES(gen_random_uuid(),source.project_id,source.supplier_id,'New prefix article','verification','verification')
+        RETURNING article_number INTO second_article;
+    PERFORM pg_temp.verify(second_article LIKE 'ART150-%'
+        AND (SELECT article_number=article FROM crm.supplier_goods_entry WHERE id=goods),
+        'a changed project prefix applies only to new cards');
+    DELETE FROM crm.supplier_goods_entry WHERE id=goods;
+    PERFORM pg_temp.verify(EXISTS(SELECT 1 FROM crm.supplier_goods_article_number WHERE article_number=article),
+        'deleted goods article remains reserved');
+END $$;
+ROLLBACK;
 
 DO $$
 DECLARE brand UUID := 'b146b146-b146-4146-8146-b146b146b146';
