@@ -1,4 +1,4 @@
-FROM flyway/flyway:13.9.0-alpine@sha256:ae8e985a8caf73181a39aad823690f27d55c850d4c5cea92a94c0ce4b3943156
+FROM flyway/flyway:13.11.1-alpine@sha256:ca71f3b89abb622198c0c462bb66bada4d0fecc64c4998f2c76a751cd969dcef
 
 # BoxEU connects only to PostgreSQL. Do not ship unrelated JDBC driver bundles.
 RUN apk upgrade --no-cache \
